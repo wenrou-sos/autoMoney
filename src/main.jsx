@@ -16,7 +16,8 @@ const emptyForm = {
   modificationScope: '',
   repoUrl: '',
   commitId: '',
-  result: ''
+  result: '',
+  submitted: false
 };
 
 const filterFields = [
@@ -86,12 +87,18 @@ function App() {
   const [filters, setFilters] = useState({ repoId: '', solver: '', traeSessionId: '', modificationScope: '', result: '' });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [updatingSubmittedId, setUpdatingSubmittedId] = useState(null);
   const [tableScrollY, setTableScrollY] = useState(360);
   const tableContainerRef = useRef(null);
   const [messageApi, contextHolder] = message.useMessage();
 
   const queryParams = useMemo(() => ({ date: dateFilter, search, ...filters }), [dateFilter, search, filters]);
+  const selectedRecords = useMemo(
+    () => records.filter((record) => selectedRowKeys.includes(record.id)),
+    [records, selectedRowKeys]
+  );
 
   useEffect(() => {
     function updateTableHeight() {
@@ -120,6 +127,10 @@ function App() {
   useEffect(() => {
     loadRecords();
   }, [queryParams]);
+
+  useEffect(() => {
+    setSelectedRowKeys((current) => current.filter((id) => records.some((record) => record.id === id && !record.submitted)));
+  }, [records]);
 
   function updateForm(key, value) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -172,7 +183,8 @@ function App() {
       modificationScope: record.modificationScope,
       repoUrl: record.repoUrl,
       commitId: record.commitId,
-      result: record.result
+      result: record.result,
+      submitted: record.submitted
     });
     setFormOpen(true);
   }
@@ -207,6 +219,35 @@ function App() {
       messageApi.error(err.message);
     } finally {
       setUpdatingSubmittedId(null);
+    }
+  }
+
+  async function batchMarkSubmitted() {
+    const targets = selectedRecords.filter((record) => !record.submitted);
+    if (!targets.length) {
+      messageApi.info('请选择未提交的记录。');
+      return;
+    }
+
+    setBatchSubmitting(true);
+    try {
+      const updatedRecords = await Promise.all(
+        targets.map((record) => (
+          apiRequest(`/api/records/${record.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json; charset=utf-8' },
+            body: JSON.stringify({ ...record, submitted: true })
+          })
+        ))
+      );
+      const updatedMap = new Map(updatedRecords.map((data) => [data.record.id, data.record]));
+      setRecords((current) => current.map((record) => updatedMap.get(record.id) || record));
+      setSelectedRowKeys([]);
+      messageApi.success(`已批量标记 ${updatedRecords.length} 条记录为已提交。`);
+    } catch (err) {
+      messageApi.error(err.message);
+    } finally {
+      setBatchSubmitting(false);
     }
   }
 
@@ -298,6 +339,14 @@ function App() {
     }
   ];
 
+  const rowSelection = {
+    selectedRowKeys,
+    onChange: setSelectedRowKeys,
+    getCheckboxProps: (record) => ({
+      disabled: record.submitted
+    })
+  };
+
   return (
     <ConfigProvider
       theme={{
@@ -316,6 +365,15 @@ function App() {
           </div>
           <div className="topbar-actions">
             <Button type="primary" onClick={openCreateModal}>新增</Button>
+            <Button
+              type="primary"
+              ghost
+              onClick={batchMarkSubmitted}
+              loading={batchSubmitting}
+              disabled={!selectedRowKeys.length}
+            >
+              批量标记已提交{selectedRowKeys.length ? ` (${selectedRowKeys.length})` : ''}
+            </Button>
             <Button onClick={loadRecords} loading={loading}>刷新</Button>
             <Button onClick={exportCsv}>导出 CSV</Button>
           </div>
@@ -358,6 +416,7 @@ function App() {
             <Table
               className="records-table"
               rowKey="id"
+              rowSelection={rowSelection}
               columns={columns}
               dataSource={records}
               loading={loading}
